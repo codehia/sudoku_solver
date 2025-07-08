@@ -1,18 +1,39 @@
 import csv
+from pprint import pp
 
-def parse_file(file_name):
-    with open(file_name, 'r') as test_file:
-       dict_reader = csv.DictReader(test_file)
-       for idx, row in enumerate(dict_reader):
-           my_string = row['quizzes']
-           chunk_size = 9
-           temp = [list(a) for a in [my_string[i:i + chunk_size] for i in range(0, len(my_string), chunk_size)]]
-           from pprint import pp
-           pp(temp)
+"""
+[['2', '1', '8', '9', '5', '4', '7', '6', '3'],
+ ['7', '6', '3', '1', '2', '8', '5', '9', '4'],
+ ['5', '9', '4', '6', '7', '3', '2', '1', '8'],
+ ['4', '2', '9', '5', '3', '6', '8', '7', '1'],
+ ['3', '5', '6', '7', '8', '1', '0', '2', '9'],
+ ['8', '7', '1', '2', '4', '9', '3', '5', '6'],
+ ['9', '8', '2', '4', '6', '5', '1', '3', '7'],
+ ['1', '3', '7', '8', '9', '2', '6', '4', '5'],
+ ['6', '4', '5', '3', '1', '7', '9', '8', '2']]
+"""
+
+
+def solve(puzzle: list[list[str]]) -> list[list[str]]:
+    # Each list inside the outer list is a ROW (R)
+    # '0' is a empty value
+    # Column (C)
+    # Block (B)
+    pass
+
 
 def main():
-    print("Hello from sudoku-solver!")
-    parse_file('./testcases.csv')
+    ds = [['2', '1', '8', '9', '5', '4', '7', '6', '3'],
+          ['7', '6', '3', '1', '2', '8', '5', '9', '4'],
+          ['5', '9', '4', '6', '7', '3', '2', '1', '8'],
+          ['4', '2', '9', '5', '3', '6', '8', '7', '1'],
+          ['3', '5', '6', '7', '8', '1', '0', '2', '9'],
+          ['8', '7', '1', '2', '4', '9', '3', '5', '6'],
+          ['9', '8', '2', '4', '6', '5', '1', '3', '7'],
+          ['1', '3', '7', '8', '9', '2', '6', '4', '5'],
+          ['6', '4', '5', '3', '1', '7', '9', '8', '2']]
+    solution = solve(ds)
+    pp(solution)
 
 
 if __name__ == "__main__":
