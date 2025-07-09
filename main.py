@@ -1,9 +1,6 @@
 from pprint import pp
 import copy
-
-
-# TODO: Consider this approach
-# {'1': (({R}, ...), ({C}, ...), ({B}, ...)), '2': {}, ...}
+import itertools
 
 """
 [['2', '1', '8', '9', '5', '4', '7', '6', '3'],
@@ -17,6 +14,8 @@ import copy
  ['6', '4', '5', '3', '1', '7', '9', '8', '2']]
 """
 
+# TODO: Consider this approach
+# {'1': (({R}, ...), ({C}, ...), ({B}, ...)), '2': {}, ...}
 """
 ELEM: (i, j)
 ELEM: -> R, C, B
@@ -25,21 +24,14 @@ while:
     ({0..9} | candidates for (i, j)) - R - C - B
     candidates -> len(candidates) == 1 -> final_value
 """
-type Puzzle = list[list[str]]
-type ElementIndex = tuple[int, int]
+type PuzzleType = list[list[str]]
+type ElementIndexType = tuple[int, int]
 
-
-CANDIDATES = {
-    # (2, 3): {1, 2, 4}
-}
-
+CANDIDATES = {} # (2, 3): {1, 2, 4}
 EMPTY_VALUE_PLACEHOLDER = '0'
 BLOCK_SIZE = 3
 
-
-
-
-def get_column_values(element_index: ElementIndex, puzzle: list[list[str]]) -> set[str]:
+def get_column_values(element_index: ElementIndexType, puzzle: PuzzleType) -> set[str]:
     # TODO: Consider pivot of the puzzle
     column_values = set()
     for row in puzzle:
@@ -48,12 +40,10 @@ def get_column_values(element_index: ElementIndex, puzzle: list[list[str]]) -> s
                 column_values.add(val)
     return column_values
 
-
-def get_row_values(element_index: ElementIndex, puzzle: list[list[str]]) -> set[str]:
+def get_row_values(element_index: ElementIndexType, puzzle: PuzzleType) -> set[str]:
     return {elem for elem in puzzle[element_index[0]] if elem != EMPTY_VALUE_PLACEHOLDER}
 
-
-def get_block_values(element_index: ElementIndex, puzzle: list[list[str]]) -> set[str]:
+def get_block_values(element_index: ElementIndexType, puzzle: PuzzleType) -> set[str]:
     row_start = element_index[0] // 3 * 3
     col_start = element_index[1] // 3 * 3
     return {
@@ -63,19 +53,42 @@ def get_block_values(element_index: ElementIndex, puzzle: list[list[str]]) -> se
         if puzzle[row_idx][col_idx] != EMPTY_VALUE_PLACEHOLDER
     }
 
-def solve(puzzle: list[list[str]]) -> list[list[str]]:
-    # Each list inside the outer list is a ROW (R)
-    # Column (C)
-    # Block (B)
+def is_solved(puzzle: PuzzleType) -> bool:
+    return EMPTY_VALUE_PLACEHOLDER not in set(itertools.chain.from_iterable(puzzle))
 
-    # for each [i][j] of the puzzle ->
-    # get_column_values
-    # get_row_values
-    # get_block_values
+def populate_candidates(puzzle: PuzzleType):
+    for row_idx, row in enumerate(puzzle):
+        for col_idx, value in enumerate(row):
+            if value == EMPTY_VALUE_PLACEHOLDER:
+                element_index = (row_idx, col_idx)
+                column_values = get_column_values(element_index, puzzle)
+                row_values = get_row_values(element_index, puzzle)
+                block_values = get_block_values(element_index, puzzle)
+                CANDIDATES[element_index] = set(map(str, range(1, 10))) - (column_values | row_values | block_values)
+
+def solve(puzzle: PuzzleType) -> PuzzleType:
+    populate_candidates(puzzle)
     solution = copy.deepcopy(puzzle)
 
-    # TODO: Replace
-    return [[str(i) for i in range(1, 10)] for _ in range(9)]
+    while not is_solved(solution):
+        changed = False
+        for row_idx, row in enumerate(solution):
+            for col_idx, col in enumerate(row):
+                if (candidates := CANDIDATES.get((row_idx, col_idx))) is None:
+                    continue
+                if len(candidates) == 1:
+                    solution[row_idx][col_idx] = candidates.pop()
+                    changed = True
+                # Remove the value from candidates
+                elif len(candidates) > 1:
+                    column_values = get_column_values((row_idx, col_idx), solution)
+                    row_values = get_row_values((row_idx, col_idx), solution)
+                    block_values = get_block_values((row_idx, col_idx), solution)
+                    new_candidates = candidates  - (column_values | row_values | block_values)
+                    CANDIDATES[(row_idx, col_idx)] = new_candidates
+        if not changed:
+            print("No changes made in this iteration, puzzle might be unsolvable or requires a different approach.")
+    return solution
 
 def main():
     ds = [['2', '1', '8', '9', '5', '4', '7', '6', '3'],

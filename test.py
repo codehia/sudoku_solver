@@ -2,7 +2,7 @@ import csv
 
 import pytest
 
-from main import get_block_values, get_column_values, get_row_values, solve
+from main import get_block_values, get_column_values, get_row_values, is_solved, solve
 
 
 def parse_file(file_name):
@@ -82,3 +82,15 @@ def test_get_block_values():
     for idx, expected_col_values in idx_column_mapping.items():
         column_values = get_block_values(idx, puzzle)
         assert column_values == expected_col_values
+
+def test_is_solved():
+    puzzle = [['2', '1', '8', '9', '5', '4', '7', '6', '3'],
+              ['7', '6', '3', '1', '2', '8', '5', '9', '4'],
+              ['5', '9', '4', '6', '7', '3', '2', '1', '8'],
+              ['4', '2', '9', '5', '3', '6', '8', '7', '1'],
+              ['3', '5', '6', '7', '8', '1', '0', '2', '9'],
+              ['8', '7', '1', '2', '4', '9', '3', '5', '6'],
+              ['9', '8', '2', '4', '6', '5', '1', '3', '7'],
+              ['1', '3', '7', '8', '9', '2', '6', '4', '5'],
+              ['6', '4', '5', '3', '1', '7', '9', '8', '2']]
+    assert not is_solved(puzzle)
