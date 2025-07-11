@@ -71,14 +71,15 @@ def solve(puzzle: PuzzleType) -> PuzzleType:
     solution = copy.deepcopy(puzzle)
 
     while not is_solved(solution):
-        changed = False
+        prev_candidates = copy.deepcopy(CANDIDATES)
+
         for row_idx, row in enumerate(solution):
             for col_idx, col in enumerate(row):
                 if (candidates := CANDIDATES.get((row_idx, col_idx))) is None:
                     continue
                 if len(candidates) == 1:
                     solution[row_idx][col_idx] = candidates.pop()
-                    changed = True
+                    CANDIDATES.pop((row_idx, col_idx), None)
                 # Remove the value from candidates
                 elif len(candidates) > 1:
                     column_values = get_column_values((row_idx, col_idx), solution)
@@ -86,8 +87,9 @@ def solve(puzzle: PuzzleType) -> PuzzleType:
                     block_values = get_block_values((row_idx, col_idx), solution)
                     new_candidates = candidates  - (column_values | row_values | block_values)
                     CANDIDATES[(row_idx, col_idx)] = new_candidates
-        if not changed:
+        if prev_candidates == CANDIDATES:
             print("No changes made in this iteration, puzzle might be unsolvable or requires a different approach.")
+            return solution  # Return the current state of the puzzle if no changes were made
     return solution
 
 def main():

@@ -8,5 +8,7 @@ dependencies = [
     "flake8>=7.3.0",
     "ipdb>=0.13.13",
     "pytest>=8.4.1",
+    "pytest-benchmark>=5.1.0",
+    "pytest-xdist>=3.8.0",
     "ruff>=0.12.2",
 ]
