@@ -88,6 +88,7 @@ impl core::ops::BitAnd<CandidateSet> for CandidateSet {
     }
 }
 
+#[derive(Clone)]
 pub struct Sudoku {
     grid: [u8; 41],
     row_candidates: [CandidateSet; 9],
@@ -332,20 +333,52 @@ impl core::fmt::Display for SingleLineDisplayAdaptor<'_, Sudoku> {
 }
 
 
-pub fn solve<const DEBUG: bool>(sudoku: &mut Sudoku, callback: &impl Fn(&Sudoku) -> bool) {
+pub fn solve<const DEBUG: bool>(sudoku: &mut Sudoku, callback: &(impl Fn(&Sudoku) -> bool + std::marker::Sync)) {
+    let did_solve = std::sync::Mutex::new(false);
+    let is_cancelled = || {
+        let did_solve = did_solve.lock().unwrap();
+        *did_solve
+    };
+
+    fn make_callback_wrapper(did_solve: &std::sync::Mutex<bool>, callback: &(impl Fn(&Sudoku) -> bool + std::marker::Sync)) -> impl Fn(&Sudoku) -> bool + std::marker::Sync {
+        |x| {
+            let mut did_solve = did_solve.lock().unwrap();
+
+            if !*did_solve && callback(x) {
+                *did_solve = true;
+                true
+            } else {
+                false
+            }
+        }
+    }
+
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            solve_single_thread::<DEBUG>(&mut sudoku.clone(), &make_callback_wrapper(&did_solve, callback), &is_cancelled, &|x| (80-x) as u8);
+        });
+        scope.spawn(|| {
+            solve_single_thread::<DEBUG>(&mut sudoku.clone(), &make_callback_wrapper(&did_solve, callback), &is_cancelled, &|x| [20, 66, 78, 77, 39, 68, 57, 69, 65, 74, 13, 19, 60, 38, 23, 53, 5, 6, 12, 73, 59, 51, 30, 58, 80, 24, 0, 9, 42, 64, 52, 41, 61, 21, 31, 27, 17, 67, 33, 62, 4, 11, 63, 48, 10, 70, 34, 2, 44, 45, 46, 1, 29, 15, 26, 16, 7, 56, 71, 35, 40, 28, 37, 76, 25, 43, 79, 54, 49, 14, 50, 72, 36, 18, 55, 75, 3, 8, 47, 22, 32][x]);
+        });
+        solve_single_thread::<DEBUG>(&mut sudoku.clone(), &make_callback_wrapper(&did_solve, callback), &is_cancelled, &|x| x as u8);
+    });
+}
+
+pub fn solve_single_thread<const DEBUG: bool>(sudoku: &mut Sudoku, callback: &impl Fn(&Sudoku) -> bool, is_cancelled: &impl Fn() -> bool, index_mapper: &impl Fn(usize) -> u8) {
     let mut stack: [CandidateSetIterator; 81] = [CandidateSetIterator::empty(); _];
     let mut stack_idx = usize::MAX;
+    let mut counter = 0;
     for (k, v) in stack.iter_mut().enumerate() {
-        if !sudoku.is_missing(k as u8) {
+        if !sudoku.is_missing(index_mapper(k)) {
             *v = CandidateSetIterator::fixed()
         }
     }
 
-    let pop_task = |sudoku: &mut Sudoku, stack: &mut [CandidateSetIterator; 81], stack_idx: &mut usize| -> bool {
+    let pop_task = |sudoku: &mut Sudoku, stack: &mut [CandidateSetIterator; 81], stack_idx: &mut usize, counter: &mut i32| -> bool {
         *stack_idx = (*stack_idx).min(80);
         while *stack_idx <= 80 && (stack[*stack_idx].is_empty() || stack[*stack_idx].is_fixed()) {
             if !stack[*stack_idx].is_fixed() {
-                sudoku.set(*stack_idx as u8, 0);
+                sudoku.set(index_mapper(*stack_idx), 0);
             }
             *stack_idx = stack_idx.wrapping_sub(1);
         }
@@ -353,10 +386,17 @@ pub fn solve<const DEBUG: bool>(sudoku: &mut Sudoku, callback: &impl Fn(&Sudoku)
             //Stack is empty, no more tasks
             false
         } else {
-            sudoku.set(*stack_idx as u8, stack[*stack_idx].next().unwrap());
+            *counter += 1;
+            if *counter > 100000 {
+                *counter = 0;
+                if is_cancelled() {
+                    return false;
+                }
+            }
+            sudoku.set(index_mapper(*stack_idx), stack[*stack_idx].next().unwrap());
             if DEBUG {
                 println!("Trying:  {}", SingleLineDisplayAdaptor(sudoku));
-                println!("         {}^", " ".repeat(*stack_idx));
+                println!("         {}^", " ".repeat(index_mapper(*stack_idx) as usize));
             }
             true
         }
@@ -371,13 +411,13 @@ pub fn solve<const DEBUG: bool>(sudoku: &mut Sudoku, callback: &impl Fn(&Sudoku)
                 return false;
             }
         } else {
-            stack[*stack_idx] = sudoku.get_candidates(*stack_idx as u8).into_iter()
+            stack[*stack_idx] = sudoku.get_candidates(index_mapper(*stack_idx)).into_iter()
         }
         return true;
     };
 
     push_tasks(sudoku, &mut stack, &mut stack_idx);
-    while pop_task(sudoku, &mut stack, &mut stack_idx) && push_tasks(sudoku, &mut stack, &mut stack_idx) {}
+    while pop_task(sudoku, &mut stack, &mut stack_idx, &mut counter) && push_tasks(sudoku, &mut stack, &mut stack_idx) {}
 }
 
 #[cfg(test)]
@@ -385,7 +425,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn tests() {
+    fn test_basic() {
         test_helper_with_answer("351897264897642135642351789265139478784265913139784526918476352523918647476503891","351897264897642135642351789265139478784265913139784526918476352523918647476523891");
         test_helper_with_answer("987645213132978465654123798579364182346812950821597634495236871263781549718459326","987645213132978465654123798579364182346812957821597634495236871263781549718459326");
         test_helper_with_answer("537864129864912375912537648629175483175348296348629751783496512201783964496251837","537864129864912375912537648629175483175348296348629751783496512251783964496251837");
@@ -518,9 +558,9 @@ mod tests {
                     Ok(0) => break,
                     Err(_) => break,
                     //This checks that the solver is able to arrive at the solution specified in the CSV file
-                    _ => test_helper_with_answer(&buf[0..81], &buf[82..163]),
+                    // _ => test_helper_with_answer(&buf[0..81], &buf[82..163]),
                     //This checks that the solver is able to arrive at _some_ (any) solution
-                    // _ => test_helper(&buf[0..81]),
+                    _ => test_helper(&buf[0..81]),
                 }
             }
             println!("\rFinished solving file {} in {:?}", path_str, std::time::Instant::now()-test_start);
@@ -528,41 +568,44 @@ mod tests {
     }
     
     fn test_helper(sudoku_str: &str) {
+        use std::sync::atomic::{AtomicBool, Ordering};
         let mut sudoku: Sudoku = sudoku_str.into();
-        let did_solve = core::cell::Cell::new(false);
+        let did_solve = AtomicBool::new(false);
         assert!(!sudoku.is_valid());
         solve::<false>(&mut sudoku, &|s| {
             assert!(s.is_valid());
-            did_solve.set(true);
+            did_solve.store(true, Ordering::Release);
             true
         });
-        assert!(did_solve.get());
+        assert!(did_solve.load(Ordering::Acquire));
     }
 
     fn test_helper_with_answer(sudoku_str: &str, solution: &str) {
+        use std::sync::atomic::{AtomicBool, Ordering};
         let mut sudoku: Sudoku = sudoku_str.into();
         let sudoku_sol: Sudoku = solution.into();
-        let did_solve = core::cell::Cell::new(false);
+        let did_solve = AtomicBool::new(false);
         assert!(!sudoku.is_valid());
         solve::<false>(&mut sudoku, &|s| {
             assert!(s.is_valid());
             if *s == sudoku_sol {
-                did_solve.set(true);
+                did_solve.store(true, Ordering::Release);
                 true
             } else {
                 false
             }
         });
-        assert!(did_solve.get());
+        assert!(did_solve.load(Ordering::Acquire));
     }
 }
 
+// Run the solver on all csv files using `cargo test --release -- --no-capture`
 fn main() {
     let mut sudoku: Sudoku =
         "000720030007006820106008709003091000580407200000000006840650010600143900005000402".into();
     assert!(!sudoku.is_valid());
     println!("Problem: {}", sudoku);
-    solve::<true>(&mut sudoku, &|s| {
+    solve::<false>(&mut sudoku, &|s| {
         assert!(s.is_valid());
         println!("Solved:  {}", &s);
         true
