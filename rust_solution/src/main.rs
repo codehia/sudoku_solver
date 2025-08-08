@@ -41,6 +41,24 @@ impl Iterator for CandidateSetIterator {
     }
 }
 
+impl CandidateSetIterator {
+    fn empty() -> Self {
+        CandidateSetIterator(0)
+    }
+
+    fn fixed() -> Self {
+        CandidateSetIterator(u16::MAX)
+    }
+
+    fn is_fixed(&self) -> bool {
+        self.0 == u16::MAX
+    }
+
+    fn is_empty(&self) -> bool {
+        self.0 == 0
+    }
+}
+
 impl IntoIterator for CandidateSet {
     type Item = u8;
     type IntoIter = CandidateSetIterator;
@@ -153,12 +171,11 @@ impl Sudoku {
         index % 9
     }
 
-    fn get_candidates(&self, index: u8) -> impl Iterator<Item = u8> + 'static {
+    fn get_candidates(&self, index: u8) -> CandidateSet {
         let row_candidate_set = self.row_candidates[Self::row_index(index) as usize];
         let col_candidate_set = self.col_candidates[Self::col_index(index) as usize];
         let grid_candidate_set = self.grid_candidates[Self::grid_index(index) as usize];
-        let subset = col_candidate_set & row_candidate_set & grid_candidate_set;
-        subset.into_iter()
+        col_candidate_set & row_candidate_set & grid_candidate_set
     }
 }
 
@@ -295,19 +312,70 @@ impl core::fmt::Display for Sudoku {
     }
 }
 
-pub fn solve(sudoku: &mut Sudoku, index: u8, callback: &impl Fn(&Sudoku)) {
-    if index == 81 {
-        callback(sudoku);
-        return;
-    }
-    if sudoku.is_missing(index) {
-        for candidate_val in sudoku.get_candidates(index) {
-            sudoku.set(index, candidate_val);
-            solve(sudoku, index + 1, callback);
+struct SingleLineDisplayAdaptor<'a, T>(&'a T);
+impl core::fmt::Display for SingleLineDisplayAdaptor<'_, Sudoku> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        for i in 0..9 {
+            // "\n".fmt(f)?;
+            for j in 0..9 {
+                let val = self.0.get(i * 9 + j);
+                if val == 0 {
+                    "?".fmt(f)?;
+                } else {
+                    val.fmt(f)?;
+                }
+                // ", ".fmt(f)?;
+            }
         }
-        sudoku.set(index, 0);
-    } else {
-        solve(sudoku, index + 1, callback);
+        Ok(())
+    }
+}
+
+
+pub fn solve<const DEBUG: bool>(sudoku: &mut Sudoku, callback: &impl Fn(&Sudoku)) {
+    let mut stack: [CandidateSetIterator; 81] = [CandidateSetIterator::empty(); _];
+    let mut stack_idx = usize::MAX;
+    for (k, v) in stack.iter_mut().enumerate() {
+        if !sudoku.is_missing(k as u8) {
+            *v = CandidateSetIterator::fixed()
+        }
+    }
+
+    let pop_task = |sudoku: &mut Sudoku, stack: &mut [CandidateSetIterator; 81], stack_idx: &mut usize| -> bool {
+        *stack_idx = (*stack_idx).min(80);
+        while *stack_idx <= 80 && (stack[*stack_idx].is_empty() || stack[*stack_idx].is_fixed()) {
+            if !stack[*stack_idx].is_fixed() {
+                sudoku.set(*stack_idx as u8, 0);
+            }
+            *stack_idx = stack_idx.wrapping_sub(1);
+        }
+        if *stack_idx > 80 {
+            //Stack is empty, no more tasks
+            false
+        } else {
+            sudoku.set(*stack_idx as u8, stack[*stack_idx].next().unwrap());
+            if DEBUG {
+                println!("Trying:  {}", SingleLineDisplayAdaptor(sudoku));
+                println!("         {}^", " ".repeat(*stack_idx));
+            }
+            true
+        }
+    };
+    let push_tasks = |sudoku: &mut Sudoku, stack: &mut [CandidateSetIterator; 81], stack_idx: &mut usize| {
+        *stack_idx = (*stack_idx).wrapping_add(1);
+        while *stack_idx <= 80 && stack[*stack_idx].is_fixed() {
+            *stack_idx += 1;
+        }
+        if *stack_idx > 80 {
+            callback(&sudoku)
+        } else {
+            stack[*stack_idx] = sudoku.get_candidates(*stack_idx as u8).into_iter()
+        }
+    };
+
+    push_tasks(sudoku, &mut stack, &mut stack_idx);
+    while pop_task(sudoku, &mut stack, &mut stack_idx) {
+        push_tasks(sudoku, &mut stack, &mut stack_idx)
     }
 }
 
@@ -429,8 +497,10 @@ mod tests {
         use std::fs;
         use std::io::{BufReader, BufRead};
         let paths = fs::read_dir("../test_files").unwrap();
+        let mut paths = paths.flatten().collect::<std::vec::Vec<_>>();
+        paths.sort_by_key(|x| (x.path().as_os_str().len(), x.path()));
         for path in paths {
-            let path = path.unwrap().path();
+            let path = path.path();
             let path_str: String = path.display().to_string();
             println!("Solving file {}...", path_str);
             let test_start = std::time::Instant::now();
@@ -457,7 +527,7 @@ mod tests {
         let mut sudoku: Sudoku = sudoku_str.into();
         let did_solve = core::cell::Cell::new(false);
         assert!(!sudoku.is_valid());
-        solve(&mut sudoku, 0, &|s| {
+        solve::<false>(&mut sudoku, &|s| {
             assert!(s.is_valid());
             did_solve.set(true);
         });
@@ -469,7 +539,7 @@ mod tests {
         let sudoku_sol: Sudoku = solution.into();
         let did_solve = core::cell::Cell::new(false);
         assert!(!sudoku.is_valid());
-        solve(&mut sudoku, 0, &|s| {
+        solve::<false>(&mut sudoku, &|s| {
             assert!(s.is_valid());
             if *s == sudoku_sol {
                 did_solve.set(true);
@@ -481,11 +551,11 @@ mod tests {
 
 fn main() {
     let mut sudoku: Sudoku =
-        "070030000000012000002005019050020073700000105140000906200054008630109502005267300".into();
+        "000720030007006820106008709003091000580407200000000006840650010600143900005000402".into();
     assert!(!sudoku.is_valid());
     println!("Problem: {}", sudoku);
-    solve(&mut sudoku, 0, &|s| {
+    solve::<true>(&mut sudoku, &|s| {
         assert!(s.is_valid());
-        println!("solved: {}", &s);
+        println!("Solved:  {}", &s);
     });
 }
