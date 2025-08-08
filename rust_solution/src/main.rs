@@ -332,7 +332,7 @@ impl core::fmt::Display for SingleLineDisplayAdaptor<'_, Sudoku> {
 }
 
 
-pub fn solve<const DEBUG: bool>(sudoku: &mut Sudoku, callback: &impl Fn(&Sudoku)) {
+pub fn solve<const DEBUG: bool>(sudoku: &mut Sudoku, callback: &impl Fn(&Sudoku) -> bool) {
     let mut stack: [CandidateSetIterator; 81] = [CandidateSetIterator::empty(); _];
     let mut stack_idx = usize::MAX;
     for (k, v) in stack.iter_mut().enumerate() {
@@ -361,22 +361,23 @@ pub fn solve<const DEBUG: bool>(sudoku: &mut Sudoku, callback: &impl Fn(&Sudoku)
             true
         }
     };
-    let push_tasks = |sudoku: &mut Sudoku, stack: &mut [CandidateSetIterator; 81], stack_idx: &mut usize| {
+    let push_tasks = |sudoku: &mut Sudoku, stack: &mut [CandidateSetIterator; 81], stack_idx: &mut usize| -> bool {
         *stack_idx = (*stack_idx).wrapping_add(1);
         while *stack_idx <= 80 && stack[*stack_idx].is_fixed() {
             *stack_idx += 1;
         }
         if *stack_idx > 80 {
-            callback(&sudoku)
+            if callback(&sudoku) {
+                return false;
+            }
         } else {
             stack[*stack_idx] = sudoku.get_candidates(*stack_idx as u8).into_iter()
         }
+        return true;
     };
 
     push_tasks(sudoku, &mut stack, &mut stack_idx);
-    while pop_task(sudoku, &mut stack, &mut stack_idx) {
-        push_tasks(sudoku, &mut stack, &mut stack_idx)
-    }
+    while pop_task(sudoku, &mut stack, &mut stack_idx) && push_tasks(sudoku, &mut stack, &mut stack_idx) {}
 }
 
 #[cfg(test)]
@@ -502,7 +503,7 @@ mod tests {
         for path in paths {
             let path = path.path();
             let path_str: String = path.display().to_string();
-            println!("Solving file {}...", path_str);
+            print!("Solving file {}...", path_str);
             let test_start = std::time::Instant::now();
             let file = fs::File::open(path).unwrap();
             let mut reader = BufReader::new(file);
@@ -516,7 +517,10 @@ mod tests {
                 match reader.read_line(&mut buf) {
                     Ok(0) => break,
                     Err(_) => break,
+                    //This checks that the solver is able to arrive at the solution specified in the CSV file
                     _ => test_helper_with_answer(&buf[0..81], &buf[82..163]),
+                    //This checks that the solver is able to arrive at _some_ (any) solution
+                    // _ => test_helper(&buf[0..81]),
                 }
             }
             println!("\rFinished solving file {} in {:?}", path_str, std::time::Instant::now()-test_start);
@@ -530,6 +534,7 @@ mod tests {
         solve::<false>(&mut sudoku, &|s| {
             assert!(s.is_valid());
             did_solve.set(true);
+            true
         });
         assert!(did_solve.get());
     }
@@ -543,6 +548,9 @@ mod tests {
             assert!(s.is_valid());
             if *s == sudoku_sol {
                 did_solve.set(true);
+                true
+            } else {
+                false
             }
         });
         assert!(did_solve.get());
@@ -557,5 +565,6 @@ fn main() {
     solve::<true>(&mut sudoku, &|s| {
         assert!(s.is_valid());
         println!("Solved:  {}", &s);
+        true
     });
 }
