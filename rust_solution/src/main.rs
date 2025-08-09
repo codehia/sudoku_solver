@@ -1,5 +1,7 @@
 #![feature(isolate_most_least_significant_one)]
 
+const MULTITHREADING_DEBUG: bool = true;
+
 trait MaybeValid {
     fn is_valid(&self) -> bool;
 }
@@ -332,39 +334,227 @@ impl core::fmt::Display for SingleLineDisplayAdaptor<'_, Sudoku> {
     }
 }
 
+use std::sync::{Mutex, RwLock, Condvar};
+use std::thread;
+use core::marker::PhantomData;
 
-pub fn solve<const DEBUG: bool>(sudoku: &mut Sudoku, callback: &(impl Fn(&Sudoku) -> bool + std::marker::Sync)) {
-    let did_solve = std::sync::Mutex::new(false);
-    let is_cancelled = || {
-        let did_solve = did_solve.lock().unwrap();
-        *did_solve
-    };
-
-    fn make_callback_wrapper(did_solve: &std::sync::Mutex<bool>, callback: &(impl Fn(&Sudoku) -> bool + std::marker::Sync)) -> impl Fn(&Sudoku) -> bool + std::marker::Sync {
-        |x| {
-            let mut did_solve = did_solve.lock().unwrap();
-
-            if !*did_solve && callback(x) {
-                *did_solve = true;
-                true
-            } else {
-                false
-            }
-        }
-    }
-
-    std::thread::scope(|scope| {
-        scope.spawn(|| {
-            solve_single_thread::<DEBUG>(&mut sudoku.clone(), &make_callback_wrapper(&did_solve, callback), &is_cancelled, &|x| (80-x) as u8);
-        });
-        scope.spawn(|| {
-            solve_single_thread::<DEBUG>(&mut sudoku.clone(), &make_callback_wrapper(&did_solve, callback), &is_cancelled, &|x| [20, 66, 78, 77, 39, 68, 57, 69, 65, 74, 13, 19, 60, 38, 23, 53, 5, 6, 12, 73, 59, 51, 30, 58, 80, 24, 0, 9, 42, 64, 52, 41, 61, 21, 31, 27, 17, 67, 33, 62, 4, 11, 63, 48, 10, 70, 34, 2, 44, 45, 46, 1, 29, 15, 26, 16, 7, 56, 71, 35, 40, 28, 37, 76, 25, 43, 79, 54, 49, 14, 50, 72, 36, 18, 55, 75, 3, 8, 47, 22, 32][x]);
-        });
-        solve_single_thread::<DEBUG>(&mut sudoku.clone(), &make_callback_wrapper(&did_solve, callback), &is_cancelled, &|x| x as u8);
-    });
+struct SharedContext<SOLFN> {
+    current_problem_index: i32,
+    current_problem: Sudoku,
+    solution_callback: Option<SOLFN>, //None value signifies that problem is solved
 }
 
-pub fn solve_single_thread<const DEBUG: bool>(sudoku: &mut Sudoku, callback: &impl Fn(&Sudoku) -> bool, is_cancelled: &impl Fn() -> bool, index_mapper: &impl Fn(usize) -> u8) {
+struct Solver<'a, SOLFN>{
+    shared_context: &'a Mutex<SharedContext<SOLFN>>
+}
+
+impl<'a, SOLFN> Solver<'a, SOLFN>
+where SOLFN: Fn(&Sudoku) -> bool + std::marker::Send
+{
+    fn solve(&mut self, sudoku: &mut Sudoku, callback: SOLFN) {
+        {
+            let mut shared_context = self.shared_context.lock().unwrap();
+            shared_context.current_problem_index += 1;
+            shared_context.current_problem = sudoku.clone();
+            shared_context.solution_callback = Some(callback);
+        }
+        if MULTITHREADING_DEBUG {
+            println!("Main thread is {:?}", thread::current().id());
+        }
+        multithreaded_helper::<false, _>(self.shared_context);
+    }
+}
+
+fn multithreaded_helper<const STAY_ALIVE: bool, SOLFN: Fn(&Sudoku) -> bool + std::marker::Send>(shared_context: &Mutex<SharedContext<SOLFN>>) {
+    let mut local_last_known_problem_index;
+    let mut local_last_known_problem;
+    loop {
+        if MULTITHREADING_DEBUG {
+            println!("Thread {:?} is checking for new tasks...", thread::current().id());
+        }
+        {
+            let shared_context = shared_context.lock().unwrap();
+            if shared_context.current_problem_index == -1 {
+                if MULTITHREADING_DEBUG {
+                    println!("Thread {:?} acknowledged order to shut down", thread::current().id());
+                }
+                break;
+            }
+            if shared_context.solution_callback.is_none() {
+                if MULTITHREADING_DEBUG {
+                    println!("Thread {:?} found no new tasks", thread::current().id());
+                }
+                thread::yield_now();
+                if !STAY_ALIVE {
+                    if MULTITHREADING_DEBUG {
+                        println!("Thread {:?} has !STAY_ALIVE, yielding control to caller.", thread::current().id());
+                    }
+                    break;
+                }
+                continue;
+            }
+            local_last_known_problem_index = shared_context.current_problem_index;
+            local_last_known_problem = shared_context.current_problem.clone();
+            if MULTITHREADING_DEBUG {
+                println!("Thread {:?} found work, will start work on {}", thread::current().id(), local_last_known_problem_index);
+            }
+        }
+
+        solve_single_thread::<false>(&mut local_last_known_problem, |solved_sudoku| {
+            let mut shared_context = shared_context.lock().unwrap();
+            match &shared_context.solution_callback {
+                Some(callback) if shared_context.current_problem_index == local_last_known_problem_index && callback(solved_sudoku) => {
+                    //We solved the current problem, which was unsolved
+                    //Mark it solved, and cancel the current solve calc
+                    if MULTITHREADING_DEBUG {
+                        println!("Thread {:?} SUCCESS has solved problem {}", thread::current().id(), local_last_known_problem_index);
+                    }
+
+                    shared_context.solution_callback = None;
+                    true
+                }
+                _ => {
+                    let should_stop = shared_context.solution_callback.is_none() || shared_context.current_problem_index != local_last_known_problem_index;
+                    if MULTITHREADING_DEBUG {
+                        if should_stop {
+                            println!("Thread {:?} CANCELLING problem {} [via on_solved]", thread::current().id(), local_last_known_problem_index);
+                        } else {
+                            println!("Thread {:?} CONTINUING,[via on_solved] for problem {}", thread::current().id(), local_last_known_problem_index);
+                        }
+                    }
+                    should_stop
+                }
+            }
+        }, || {
+            let shared_context = shared_context.lock().unwrap();
+            let should_stop = shared_context.solution_callback.is_none() || shared_context.current_problem_index != local_last_known_problem_index;
+            if MULTITHREADING_DEBUG {
+                if should_stop {
+                    println!("Thread {:?} CANCELLING problem {} [via is_cancelled]", thread::current().id(), local_last_known_problem_index);
+                } else {
+                    println!("Thread {:?} CONTINUING,[via is_cancelled] for problem {}", thread::current().id(), local_last_known_problem_index);
+                }
+            }
+            should_stop
+        },
+            |x| x as u8,
+        );
+    }
+}
+
+fn with_multithreaded_solver<T, SOLFN: Fn(&Sudoku) -> bool + std::marker::Send>(solving_callback: impl Fn (&mut Solver<SOLFN>) -> T) -> T {
+    let mut ret_val: Option<T> = None;
+
+    let shared_context = Mutex::new(SharedContext{current_problem_index: 0, current_problem: Sudoku::from("0"), solution_callback: None as Option<SOLFN> });
+    let mut solver = Solver { shared_context: &shared_context };
+    thread::scope(|scope| {
+        scope.spawn(|| {
+            if MULTITHREADING_DEBUG {
+                println!("Spawned helper thread {:?}", thread::current().id());
+            }
+
+            multithreaded_helper::<true, _>(&shared_context);
+        });
+
+        ret_val = Some(solving_callback(&mut solver));
+        let mut shared_context = shared_context.lock().unwrap();
+        shared_context.current_problem_index = -1;
+    });
+    ret_val.unwrap()
+}
+
+// use std::sync::{Mutex, RwLock, Condvar};
+// use std::thread;
+// use core::marker::PhantomData;
+// struct MultiThreadedSolver<const THREAD_COUNT: usize, const DEBUG: bool> {
+//     current_problem: RwLock<(i32, Sudoku)>,
+//     notifier: Condvar,
+//     notifier_mutex: Mutex<()>,
+// }
+// impl<const THREAD_COUNT: usize, const DEBUG: bool> MultiThreadedSolver<THREAD_COUNT, DEBUG> {
+//     fn start<'a, 'scope>(&'a mut self, thread_scope: &thread::Scope<'scope, 'a>)
+//     where 'a : 'scope
+//     {
+//         let handle = thread_scope.spawn(|| {
+//             let mut current_problem_number = 0;
+//             loop {
+//                 let (upsteam_problem_number, upstream_sudoku) = &*((self.current_problem).read().unwrap());
+//                 if *upsteam_problem_number == 0 {
+//                     self.notifier.wait(self.notifier_mutex.lock().unwrap());
+//                 } else {
+//                     // solve_single_thread::<DEBUG>(&mut upstream_sudoku.clone(), &|| {
+//                     //         let write = solver.current_problem.write().unwrap();
+
+//                     //     }, &|| {
+
+//                     //     },
+//                     //     &|x| x as u8
+//                     // );
+//                 }
+//             }
+//         });
+//     }
+
+//     fn new() -> Self {
+//         let notifier = std::sync::Condvar::new();
+//         let notifier_mutex = std::sync::Mutex::new(());
+//         let rw_lock = RwLock::new((0, Sudoku::from("")));
+//         MultiThreadedSolver{current_problem: rw_lock, notifier, notifier_mutex}
+//         // let mut solver = ;
+//         // scope.spawn(|| {
+//         //     let mut current_problem_number = 0;
+//         //     loop {
+//         //         let (upsteam_problem_number, upstream_sudoku) = &*((&rw_lock).read().unwrap());
+//         //         if *upsteam_problem_number == 0 {
+//         //             notifier.wait(notifier_mutex.lock().unwrap());
+//         //         } else {
+//         //             // solve_single_thread::<DEBUG>(&mut upstream_sudoku.clone(), &|| {
+//         //             //         let write = solver.current_problem.write().unwrap();
+
+//         //             //     }, &|| {
+
+//         //             //     },
+//         //             //     &|x| x as u8
+//         //             // );
+//         //         }
+//         //     }
+//         // });
+//         // solver
+//     }
+// }
+
+// pub fn solve<const DEBUG: bool>(sudoku: &mut Sudoku, callback: impl Fn(&Sudoku) -> bool + std::marker::Sync) {
+//     let did_solve = std::sync::Mutex::new(false);
+//     let is_cancelled = || {
+//         let did_solve = did_solve.lock().unwrap();
+//         *did_solve
+//     };
+
+//     fn make_callback_wrapper(did_solve: &std::sync::Mutex<bool>, callback: impl Fn(&Sudoku) -> bool + std::marker::Sync) -> impl Fn(&Sudoku) -> bool + std::marker::Sync {
+//         |x| {
+//             let mut did_solve = did_solve.lock().unwrap();
+
+//             if !*did_solve && callback(x) {
+//                 *did_solve = true;
+//                 true
+//             } else {
+//                 false
+//             }
+//         }
+//     }
+
+//     std::thread::scope(|scope| {
+//         scope.spawn(|| {
+//             solve_single_thread::<DEBUG>(&mut sudoku.clone(), &make_callback_wrapper(&did_solve, callback), &is_cancelled, &|x| (80-x) as u8);
+//         });
+//         scope.spawn(|| {
+//             solve_single_thread::<DEBUG>(&mut sudoku.clone(), &make_callback_wrapper(&did_solve, callback), &is_cancelled, &|x| [20, 66, 78, 77, 39, 68, 57, 69, 65, 74, 13, 19, 60, 38, 23, 53, 5, 6, 12, 73, 59, 51, 30, 58, 80, 24, 0, 9, 42, 64, 52, 41, 61, 21, 31, 27, 17, 67, 33, 62, 4, 11, 63, 48, 10, 70, 34, 2, 44, 45, 46, 1, 29, 15, 26, 16, 7, 56, 71, 35, 40, 28, 37, 76, 25, 43, 79, 54, 49, 14, 50, 72, 36, 18, 55, 75, 3, 8, 47, 22, 32][x]);
+//         });
+//         solve_single_thread::<DEBUG>(&mut sudoku.clone(), &make_callback_wrapper(&did_solve, callback), &is_cancelled, &|x| x as u8);
+//     });
+// }
+
+pub fn solve_single_thread<const DEBUG: bool>(sudoku: &mut Sudoku, callback: impl Fn(&Sudoku) -> bool, is_cancelled: impl Fn() -> bool, index_mapper: impl Fn(usize) -> u8) {
     let mut stack: [CandidateSetIterator; 81] = [CandidateSetIterator::empty(); _];
     let mut stack_idx = usize::MAX;
     let mut counter = 0;
@@ -423,6 +613,16 @@ pub fn solve_single_thread<const DEBUG: bool>(sudoku: &mut Sudoku, callback: &im
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct AnswerChecker<'a> {
+        expecting: Option<&'a str>,
+    }
+    impl<'a> AnswerChecker<'a> {
+        fn solution_callback(&self, candidate: &Sudoku) -> bool {
+            assert!(candidate.is_valid());
+            if self.expecting
+        }
+    }
 
     #[test]
     fn test_basic() {
@@ -567,26 +767,70 @@ mod tests {
         }
     }
     
+    fn test_helper_with_callback<SOLFN: Fn(&Sudoku) -> bool + Send>(solver: &mut Solver<'_, SOLFN>, sudoku_str: &str, callback: SOLFN) {
+        let mut sudoku: Sudoku = sudoku_str.into();
+        assert!(!sudoku.is_valid());
+        solver.solve(&mut sudoku, callback);
+    }
+
+    fn prepare_callback_for_any_solution() -> impl Fn(&Sudoku) -> bool {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let did_solve = AtomicBool::new(false);
+        move |candidate: &Sudoku| {
+            assert!(candidate.is_valid());
+            did_solve.store(true, Ordering::Release);
+            true
+        }
+    }
+
+    fn solution_callback(candidate: &Sudoku) -> bool {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let sudoku_sol: Sudoku = solution.into();
+        let did_solve = AtomicBool::new(false);
+        assert!(!sudoku.is_valid());
+        solver.solve(&mut sudoku, |s: &Sudoku| {
+            assert!(s.is_valid());
+            if *s == sudoku_sol {
+                did_solve.store(true, Ordering::Release);
+                true
+            } else {
+                false
+            }
+        });
+        assert!(did_solve.load(Ordering::Acquire));
+    }
+
+    fn make_callback_for_specific_solution() -> impl Fn(&Sudoku) -> bool {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let did_solve = AtomicBool::new(false);
+        move |candidate: &Sudoku| {
+            assert!(candidate.is_valid());
+            did_solve.store(true, Ordering::Release);
+            true
+        }
+    }
+
     fn test_helper(sudoku_str: &str) {
         use std::sync::atomic::{AtomicBool, Ordering};
         let mut sudoku: Sudoku = sudoku_str.into();
         let did_solve = AtomicBool::new(false);
         assert!(!sudoku.is_valid());
-        solve::<false>(&mut sudoku, &|s| {
+        fn callback(candidate: &Sudoku) {
             assert!(s.is_valid());
             did_solve.store(true, Ordering::Release);
             true
-        });
+        }
+
         assert!(did_solve.load(Ordering::Acquire));
     }
 
-    fn test_helper_with_answer(sudoku_str: &str, solution: &str) {
+    fn test_helper_with_answer(&solver: &Solver<'_, impl Fn(&Sudoku) -> bool + Send>,sudoku_str: &str, solution: &str) {
         use std::sync::atomic::{AtomicBool, Ordering};
         let mut sudoku: Sudoku = sudoku_str.into();
         let sudoku_sol: Sudoku = solution.into();
         let did_solve = AtomicBool::new(false);
         assert!(!sudoku.is_valid());
-        solve::<false>(&mut sudoku, &|s| {
+        solver.solve(&mut sudoku, |s: &Sudoku| {
             assert!(s.is_valid());
             if *s == sudoku_sol {
                 did_solve.store(true, Ordering::Release);
@@ -601,13 +845,15 @@ mod tests {
 
 // Run the solver on all csv files using `cargo test --release -- --no-capture`
 fn main() {
-    let mut sudoku: Sudoku =
-        "000720030007006820106008709003091000580407200000000006840650010600143900005000402".into();
-    assert!(!sudoku.is_valid());
-    println!("Problem: {}", sudoku);
-    solve::<false>(&mut sudoku, &|s| {
-        assert!(s.is_valid());
-        println!("Solved:  {}", &s);
-        true
+    with_multithreaded_solver(|solver| {
+        let mut sudoku: Sudoku =
+            "000720030007006820106008709003091000580407200000000006840650010600143900005000402".into();
+        assert!(!sudoku.is_valid());
+        println!("Problem: {}", sudoku);
+        solver.solve(&mut sudoku, |s| {
+            assert!(s.is_valid());
+            println!("Solved:  {}", &s);
+            true
+        });
     });
 }
