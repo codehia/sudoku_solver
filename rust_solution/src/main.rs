@@ -815,6 +815,18 @@ mod tests {
         }};
     }
 
+    macro_rules! timed_test_helper {
+        ($solver:ident, $did_solve:ident, $sudoku_str:expr, $time:ident) => {{
+            let mut sudoku: Sudoku = $sudoku_str.into();
+            $did_solve.store(false, Ordering::Release);
+            assert!(!sudoku.is_valid());
+            let solver_start = Instant::now();
+            $solver.solve(&mut sudoku, callback_expecting_generic(None, &$did_solve));
+            $time += solver_start.elapsed();
+            assert!($did_solve.load(Ordering::Acquire));
+        }};
+    }
+
     macro_rules! test_helper_with_answer {
         ($solver:ident, $did_solve:ident, $sudoku_str:expr, $solution:expr) => {{
             let mut sudoku: Sudoku = $sudoku_str.into();
@@ -967,6 +979,8 @@ mod tests {
         init();
         let did_solve = AtomicBool::new(false);
         with_multithreaded_solver(|solver| {
+            let mut total_time_spent_solving = Duration::new(0, 0);
+            let mut total_sudokus = 0;
             let paths = fs::read_dir("../test_files").unwrap();
             let mut paths = paths.flatten().collect::<std::vec::Vec<_>>();
             paths.sort_by_key(|x| (x.path().as_os_str().len(), x.path()));
@@ -990,7 +1004,10 @@ mod tests {
                         //This checks that the solver is able to arrive at the solution specified in the CSV file
                         // _ => test_helper_with_answer!(solver, did_solve, &buf[0..81], &buf[82..163]),
                         //This checks that the solver is able to arrive at _some_ (any) solution
-                        _ => test_helper!(solver, did_solve, &buf[0..81]),
+                        _ => {
+                            total_sudokus += 1;
+                            timed_test_helper!(solver, did_solve, &buf[0..81], total_time_spent_solving);
+                        },
                     }
                 }
                 println!(
@@ -999,6 +1016,7 @@ mod tests {
                     test_start.elapsed()
                 );
             }
+            println!("Solved {} sudokus in {:?} ({:?} / sudoku)", total_sudokus, total_time_spent_solving, total_time_spent_solving/total_sudokus);
         });
     }
 }
