@@ -91,7 +91,7 @@ impl Iterator for CandidateSetIterator {
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.0 == 0 {
-            return None;
+            None
         } else {
             let set_flag = self.0.isolate_least_significant_one();
             self.0 ^= set_flag;
@@ -296,7 +296,7 @@ impl MaybeValid for Sudoku {
             }
         }
 
-        return true;
+        true
     }
 }
 
@@ -348,8 +348,8 @@ impl From<&str> for Sudoku {
             grid_candidates: [CandidateSet::new(); _],
         };
         for (k, v) in value.as_bytes().iter().enumerate() {
-            let digit = *v - '0' as u8;
-            if digit != 0 as u8 {
+            let digit = *v - b'0';
+            if digit != 0_u8 {
                 sudoku.set(k as u8, digit);
             }
         }
@@ -510,7 +510,8 @@ fn multithreaded_helper<const STAY_ALIVE: bool, SOLFN: Fn(&Sudoku) -> bool + std
             &mut local_last_known_problem,
             |solved_sudoku| {
                 let mut shared_context = shared_context.lock().unwrap();
-                let should_stop = match &shared_context.solution_callback {
+                
+                match &shared_context.solution_callback {
                     Some(callback)
                         if shared_context.current_problem_index
                             == local_last_known_problem_index
@@ -553,8 +554,7 @@ fn multithreaded_helper<const STAY_ALIVE: bool, SOLFN: Fn(&Sudoku) -> bool + std
                         }
                         should_stop
                     }
-                };
-                should_stop
+                }
             },
             || {
                 let shared_context = shared_context.lock().unwrap();
@@ -721,13 +721,13 @@ pub fn solve_single_thread(
             *stack_idx += 1;
         }
         if *stack_idx > 80 {
-            if callback(&sudoku) {
+            if callback(sudoku) {
                 return false;
             }
         } else {
             stack[*stack_idx] = sudoku.get_candidates(index_mapper(*stack_idx)).into_iter()
         }
-        return true;
+        true
     };
 
     push_tasks(sudoku, &mut stack, &mut stack_idx);
