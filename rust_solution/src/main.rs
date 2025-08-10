@@ -1,16 +1,33 @@
 #![feature(isolate_most_least_significant_one)]
 #![feature(unsafe_cell_access)]
+#![feature(thread_id_value)]
+#![feature(file_buffered)]
 
+use std::fs::File;
+use std::io::BufWriter;
+use std::io::Write;
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
-use core::cell::Cell;
+use core::cell::{Cell, RefCell};
 use std::sync::Once;
 
 const MULTITHREADING_DEBUG: bool = cfg!(MULTITHREADING_DEBUG);
 const SUDOKU_DEBUG: bool = cfg!(SUDOKU_DEBUG);
 
 static INIT: Once = Once::new();
+
+thread_local! {
+    static THREAD_OUT_FILE: RefCell<BufWriter<File>> = RefCell::new(File::create_buffered(format!("thread{}.out", thread::current().id().as_u64())).unwrap());
+}
+
+macro_rules! thread_println {
+    ($($args:tt)*) => {
+        THREAD_OUT_FILE.with(|file|
+            writeln!(file.borrow_mut(), $($args)*).unwrap()
+        );
+    };
+}
 
 struct TrustMeBro<T> {
     inner : core::cell::UnsafeCell<core::mem::MaybeUninit<T>>
@@ -409,7 +426,7 @@ where SOLFN: Fn(&Sudoku) -> bool + std::marker::Send
 {
     fn solve(&mut self, sudoku: &mut Sudoku, callback: SOLFN) {
         if MULTITHREADING_DEBUG {
-            println!("{:?}: Queueing next problem with main thread: {:?}", PROGRAM_START_TIME.elapsed().as_micros(), thread::current().id());
+            thread_println!("{:?}: Queueing next problem with main thread: {:?}", PROGRAM_START_TIME.elapsed().as_nanos(), thread::current().id());
         }
         {
             let mut shared_context = self.shared_context.lock().unwrap();
@@ -417,11 +434,11 @@ where SOLFN: Fn(&Sudoku) -> bool + std::marker::Send
             shared_context.current_problem = sudoku.clone();
             shared_context.solution_callback = Some(callback);
             if MULTITHREADING_DEBUG {
-                println!("{:?}: Queued problem {} with main thread: {:?}", PROGRAM_START_TIME.elapsed().as_micros(), shared_context.current_problem_index, thread::current().id());
+                thread_println!("{:?}: Queued problem {} with main thread: {:?}", PROGRAM_START_TIME.elapsed().as_nanos(), shared_context.current_problem_index, thread::current().id());
             }
         }
         if MULTITHREADING_DEBUG {
-            println!("{:?}: Started work on the problem in main thread: {:?}", PROGRAM_START_TIME.elapsed().as_micros(), thread::current().id());
+            thread_println!("{:?}: Started work on the problem in main thread: {:?}", PROGRAM_START_TIME.elapsed().as_nanos(), thread::current().id());
         }
         multithreaded_helper::<false, _>(self.shared_context, |x| x as u8);
     }
@@ -432,25 +449,25 @@ fn multithreaded_helper<const STAY_ALIVE: bool, SOLFN: Fn(&Sudoku) -> bool + std
     let mut local_last_known_problem;
     loop {
         if MULTITHREADING_DEBUG {
-            println!("{:?}: Thread {:?} is checking for new tasks...", PROGRAM_START_TIME.elapsed().as_micros(), thread::current().id());
+            thread_println!("{:?}: Thread {:?} is checking for new tasks...", PROGRAM_START_TIME.elapsed().as_nanos(), thread::current().id());
         }
         {
             let shared_context = shared_context.lock().unwrap();
             if shared_context.current_problem_index == -1 {
                 if MULTITHREADING_DEBUG {
-                    println!("{:?}: Thread {:?} acknowledged order to shut down", PROGRAM_START_TIME.elapsed().as_micros(), thread::current().id());
+                    thread_println!("{:?}: Thread {:?} acknowledged order to shut down", PROGRAM_START_TIME.elapsed().as_nanos(), thread::current().id());
                 }
                 break;
             }
             if shared_context.solution_callback.is_none() {
                 if MULTITHREADING_DEBUG {
-                    println!("{:?}: Thread {:?} found no new tasks", PROGRAM_START_TIME.elapsed().as_micros(), thread::current().id());
+                    thread_println!("{:?}: Thread {:?} found no new tasks", PROGRAM_START_TIME.elapsed().as_nanos(), thread::current().id());
                 }
                 core::mem::drop(shared_context);
                 thread::yield_now();
                 if !STAY_ALIVE {
                     if MULTITHREADING_DEBUG {
-                        println!("{:?}: Thread {:?} has !STAY_ALIVE, yielding control to caller.", PROGRAM_START_TIME.elapsed().as_micros(), thread::current().id());
+                        thread_println!("{:?}: Thread {:?} has !STAY_ALIVE, yielding control to caller.", PROGRAM_START_TIME.elapsed().as_nanos(), thread::current().id());
                     }
                     break;
                 }
@@ -459,7 +476,7 @@ fn multithreaded_helper<const STAY_ALIVE: bool, SOLFN: Fn(&Sudoku) -> bool + std
             local_last_known_problem_index = shared_context.current_problem_index;
             local_last_known_problem = shared_context.current_problem.clone();
             if MULTITHREADING_DEBUG {
-                println!("{:?}: Thread {:?} found work, will start work on {}", PROGRAM_START_TIME.elapsed().as_micros(), thread::current().id(), local_last_known_problem_index);
+                thread_println!("{:?}: Thread {:?} found work, will start work on {}", PROGRAM_START_TIME.elapsed().as_nanos(), thread::current().id(), local_last_known_problem_index);
             }
         }
 
@@ -470,7 +487,7 @@ fn multithreaded_helper<const STAY_ALIVE: bool, SOLFN: Fn(&Sudoku) -> bool + std
                     //We solved the current problem, which was unsolved
                     //Mark it solved, and cancel the current solve calc
                     if MULTITHREADING_DEBUG {
-                        println!("{:?}: Thread {:?} SUCCESS has solved problem {}", PROGRAM_START_TIME.elapsed().as_micros(), thread::current().id(), local_last_known_problem_index);
+                        thread_println!("{:?}: Thread {:?} SUCCESS has solved problem {}", PROGRAM_START_TIME.elapsed().as_nanos(), thread::current().id(), local_last_known_problem_index);
                     }
 
                     shared_context.solution_callback = None;
@@ -480,9 +497,9 @@ fn multithreaded_helper<const STAY_ALIVE: bool, SOLFN: Fn(&Sudoku) -> bool + std
                     let should_stop = shared_context.solution_callback.is_none() || shared_context.current_problem_index != local_last_known_problem_index;
                     if MULTITHREADING_DEBUG {
                         if should_stop {
-                            println!("{:?}: Thread {:?} CANCELLING problem {} [via on_solved]", PROGRAM_START_TIME.elapsed().as_micros(), thread::current().id(), local_last_known_problem_index);
+                            thread_println!("{:?}: Thread {:?} CANCELLING problem {} [via on_solved]", PROGRAM_START_TIME.elapsed().as_nanos(), thread::current().id(), local_last_known_problem_index);
                         } else {
-                            println!("{:?}: Thread {:?} CONTINUING,[via on_solved] for problem {}", PROGRAM_START_TIME.elapsed().as_micros(), thread::current().id(), local_last_known_problem_index);
+                            thread_println!("{:?}: Thread {:?} CONTINUING,[via on_solved] for problem {}", PROGRAM_START_TIME.elapsed().as_nanos(), thread::current().id(), local_last_known_problem_index);
                         }
                     }
                     should_stop
@@ -493,9 +510,9 @@ fn multithreaded_helper<const STAY_ALIVE: bool, SOLFN: Fn(&Sudoku) -> bool + std
             let should_stop = shared_context.solution_callback.is_none() || shared_context.current_problem_index != local_last_known_problem_index;
             if MULTITHREADING_DEBUG {
                 if should_stop {
-                    println!("{:?}: Thread {:?} CANCELLING problem {} [via is_cancelled]", PROGRAM_START_TIME.elapsed().as_micros(), thread::current().id(), local_last_known_problem_index);
+                    thread_println!("{:?}: Thread {:?} CANCELLING problem {} [via is_cancelled]", PROGRAM_START_TIME.elapsed().as_nanos(), thread::current().id(), local_last_known_problem_index);
                 } else {
-                    println!("{:?}: Thread {:?} CONTINUING,[via is_cancelled] for problem {}", PROGRAM_START_TIME.elapsed().as_micros(), thread::current().id(), local_last_known_problem_index);
+                    thread_println!("{:?}: Thread {:?} CONTINUING,[via is_cancelled] for problem {}", PROGRAM_START_TIME.elapsed().as_nanos(), thread::current().id(), local_last_known_problem_index);
                 }
             }
             should_stop
@@ -537,7 +554,7 @@ fn with_multithreaded_solver<T, SOLFN: Fn(&Sudoku) -> bool + std::marker::Send>(
             let shared_context_ref = &shared_context;
             scope.spawn(move || {
                 if MULTITHREADING_DEBUG {
-                    println!("{:?}: Spawned helper thread {:?}", PROGRAM_START_TIME.elapsed().as_micros(), thread::current().id());
+                    thread_println!("{:?}: Spawned helper thread {:?}", PROGRAM_START_TIME.elapsed().as_nanos(), thread::current().id());
                 }
 
                 multithreaded_helper::<true, _>(shared_context_ref, index_mapper);
@@ -800,7 +817,7 @@ mod tests {
                         _ => test_helper!(solver, did_solve, &buf[0..81]),
                     }
                 }
-                println!("\rFinished solving file {} in {:?}", path_str, test_start.elapsed().as_micros());
+                println!("\rFinished solving file {} in {:?}", path_str, test_start.elapsed());
             }
         });
     }
