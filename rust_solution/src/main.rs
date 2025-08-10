@@ -3,8 +3,16 @@
 #![feature(thread_id_value)]
 #![feature(file_buffered)]
 
-// Run the solver on all csv files using `cargo test --release -- --no-capture`
+// Run the solver on all csv files using `RUSTFLAGS="-Cprofile-use=$PWD/merged.profdata" cargo test --release -- --no-capture`
 // Print debug logs using `RUSTFLAGS='--cfg MULTITHREADING_DEBUG' cargo run --release`
+
+/*
+PGO helps, it reduced the runtime from 237s to 205s consistently
+Generate PGO using RUSTFLAGS="-Cprofile-generate=/tmp/pgo-data" cargo test --release -- --no-capture
+~/.rustup/toolchains/beta-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-profdata  merge -o ./merged.profdata /tmp/pgo-data
+
+You can install llvm-profdata via: rustup component add llvm-tools-preview
+*/
 
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
