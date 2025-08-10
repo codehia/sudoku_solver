@@ -425,6 +425,7 @@ impl<'a, SOLFN> Solver<'a, SOLFN>
 where SOLFN: Fn(&Sudoku) -> bool + std::marker::Send
 {
     fn solve(&mut self, sudoku: &mut Sudoku, callback: SOLFN) {
+        // unsafe { PROGRAM_START_TIME.set(Instant::now()); }
         if MULTITHREADING_DEBUG {
             thread_println!("{:?}: Queueing next problem with main thread: {:?}", PROGRAM_START_TIME.elapsed().as_nanos(), thread::current().id());
         }
@@ -453,29 +454,32 @@ fn multithreaded_helper<const STAY_ALIVE: bool, SOLFN: Fn(&Sudoku) -> bool + std
         }
         {
             let shared_context = shared_context.lock().unwrap();
-            if shared_context.current_problem_index == -1 {
+            let shared_context_is_solved = shared_context.solution_callback.is_none();
+            let shared_context_current_problem_index = shared_context.current_problem_index;
+            let shared_context_current_problem = shared_context.current_problem.clone();
+            core::mem::drop(shared_context);
+            if shared_context_current_problem_index == -1 {
                 if MULTITHREADING_DEBUG {
                     thread_println!("{:?}: Thread {:?} acknowledged order to shut down", PROGRAM_START_TIME.elapsed().as_nanos(), thread::current().id());
                 }
                 break;
             }
-            if shared_context.solution_callback.is_none() {
+            if shared_context_is_solved {
                 if MULTITHREADING_DEBUG {
                     thread_println!("{:?}: Thread {:?} found no new tasks", PROGRAM_START_TIME.elapsed().as_nanos(), thread::current().id());
                 }
-                core::mem::drop(shared_context);
                 if !STAY_ALIVE {
                     if MULTITHREADING_DEBUG {
                         thread_println!("{:?}: Main Thread {:?} was late to the party, yielding control to caller.", PROGRAM_START_TIME.elapsed().as_nanos(), thread::current().id());
                     }
                     break;
                 } else {
-                    thread::yield_now();
+                    thread::sleep(Duration::from_micros(10));
                     continue;
                 }
             }
-            local_last_known_problem_index = shared_context.current_problem_index;
-            local_last_known_problem = shared_context.current_problem.clone();
+            local_last_known_problem_index = shared_context_current_problem_index;
+            local_last_known_problem = shared_context_current_problem;
             if MULTITHREADING_DEBUG {
                 thread_println!("{:?}: Thread {:?} found work, will start work on {}", PROGRAM_START_TIME.elapsed().as_nanos(), thread::current().id(), local_last_known_problem_index);
             }
@@ -570,6 +574,8 @@ fn with_multithreaded_solver<T, SOLFN: Fn(&Sudoku) -> bool + std::marker::Send>(
         }
 
         ret_val = Some(solving_callback(&mut solver));
+
+        // Shut down the threads
         let mut shared_context = shared_context.lock().unwrap();
         shared_context.current_problem_index = -1;
     });
