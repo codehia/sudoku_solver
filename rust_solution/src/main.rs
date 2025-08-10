@@ -8,7 +8,7 @@
 
 /*
 PGO helps, it reduced the runtime from 237s to 205s consistently
-Generate PGO using RUSTFLAGS="-Cprofile-generate=/tmp/pgo-data" cargo test --release -- --no-capture
+Generate PGO using `RUSTFLAGS="-Cprofile-generate=/tmp/pgo-data" cargo test --release -- --no-capture`
 ~/.rustup/toolchains/beta-aarch64-apple-darwin/lib/rustlib/aarch64-apple-darwin/bin/llvm-profdata  merge -o ./merged.profdata /tmp/pgo-data
 
 You can install llvm-profdata via: rustup component add llvm-tools-preview
@@ -518,7 +518,7 @@ fn multithreaded_helper<const STAY_ALIVE: bool, SOLFN: Fn(&Sudoku) -> bool + std
             &mut local_last_known_problem,
             |solved_sudoku| {
                 let mut shared_context = shared_context.lock().unwrap();
-                
+
                 match &shared_context.solution_callback {
                     Some(callback)
                         if shared_context.current_problem_index
@@ -638,15 +638,47 @@ fn with_multithreaded_solver<T, SOLFN: Fn(&Sudoku) -> bool + std::marker::Send>(
             }, //col wise
             |x| {
                 [
+                    0, 9, 18, 27, 36, 45, 54, 63, 72, 1, 10, 19, 28, 37, 46, 55, 64, 73, 2, 11, 20,
+                    29, 38, 47, 56, 65, 74, 3, 12, 21, 30, 39, 48, 57, 66, 75, 4, 13, 22, 31, 40,
+                    49, 58, 67, 76, 5, 14, 23, 32, 41, 50, 59, 68, 77, 6, 15, 24, 33, 42, 51, 60,
+                    69, 78, 7, 16, 25, 34, 43, 52, 61, 70, 79, 8, 17, 26, 35, 44, 53, 62, 71, 80,
+                ][80 - x]
+            }, //rev col wise
+            |x| {
+                [
+                    0, 1, 2, 9, 10, 11, 18, 19, 20, 27, 28, 29, 36, 37, 38, 45, 46, 47, 54, 55, 56,
+                    63, 64, 65, 72, 73, 74, 3, 4, 5, 12, 13, 14, 21, 22, 23, 30, 31, 32, 39, 40,
+                    41, 48, 49, 50, 57, 58, 59, 66, 67, 68, 75, 76, 77, 6, 7, 8, 15, 16, 17, 24,
+                    25, 26, 33, 34, 35, 42, 43, 44, 51, 52, 53, 60, 61, 62, 69, 70, 71, 78, 79, 80,
+                ][80 - x]
+            }, //rev subgrid wise
+            |x| {
+                [
                     20, 66, 78, 77, 39, 68, 57, 69, 65, 74, 13, 19, 60, 38, 23, 53, 5, 6, 12, 73,
                     59, 51, 30, 58, 80, 24, 0, 9, 42, 64, 52, 41, 61, 21, 31, 27, 17, 67, 33, 62,
                     4, 11, 63, 48, 10, 70, 34, 2, 44, 45, 46, 1, 29, 15, 26, 16, 7, 56, 71, 35, 40,
                     28, 37, 76, 25, 43, 79, 54, 49, 14, 50, 72, 36, 18, 55, 75, 3, 8, 47, 22, 32,
                 ][x]
             }, //random
+            |x| {
+                [
+                    10, 38, 58, 73, 19, 52, 72, 68, 55, 31, 63, 43, 13, 65, 20, 60, 57, 5, 80, 79,
+                    16, 17, 44, 39, 4, 25, 14, 32, 23, 27, 66, 9, 24, 71, 70, 8, 61, 0, 21, 30, 56,
+                    33, 74, 59, 3, 64, 54, 69, 37, 40, 28, 2, 77, 78, 46, 42, 6, 15, 7, 76, 22, 1,
+                    35, 11, 45, 51, 36, 50, 62, 41, 49, 26, 12, 67, 29, 18, 48, 34, 47, 75, 53,
+                ][x]
+            }, //random
+            |x| {
+                [
+                    41, 79, 23, 76, 29, 35, 36, 28, 52, 34, 37, 7, 43, 38, 59, 48, 50, 62, 24, 3,
+                    14, 10, 30, 40, 5, 64, 11, 25, 31, 26, 69, 33, 61, 78, 77, 70, 1, 12, 13, 74,
+                    42, 58, 22, 16, 20, 4, 57, 27, 15, 39, 63, 49, 56, 21, 60, 51, 53, 46, 44, 72,
+                    73, 67, 68, 75, 2, 6, 32, 19, 66, 8, 17, 47, 80, 65, 0, 71, 54, 55, 9, 45, 18,
+                ][x]
+            }, //random
         ]
         .into_iter()
-        .take(thread::available_parallelism().unwrap().get())
+        .take(thread::available_parallelism().unwrap().get() - 1)
         {
             let shared_context_ref = &shared_context;
             scope.spawn(move || {
