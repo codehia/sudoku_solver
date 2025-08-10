@@ -9,7 +9,7 @@ use std::io::Write;
 use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
-use core::cell::{Cell, RefCell};
+use core::cell::{Cell, RefCell, UnsafeCell};
 use std::sync::Once;
 
 const MULTITHREADING_DEBUG: bool = cfg!(MULTITHREADING_DEBUG);
@@ -18,13 +18,13 @@ const SUDOKU_DEBUG: bool = cfg!(SUDOKU_DEBUG);
 static INIT: Once = Once::new();
 
 thread_local! {
-    static THREAD_OUT_FILE: RefCell<BufWriter<File>> = RefCell::new(File::create_buffered(format!("thread{}.out", thread::current().id().as_u64())).unwrap());
+    static THREAD_OUT_FILE: UnsafeCell<BufWriter<File>> = UnsafeCell::new(File::create_buffered(format!("thread{}.out", thread::current().id().as_u64())).unwrap());
 }
 
 macro_rules! thread_println {
     ($($args:tt)*) => {
         THREAD_OUT_FILE.with(|file|
-            writeln!(file.borrow_mut(), $($args)*).unwrap()
+            unsafe { writeln!(file.as_mut_unchecked(), $($args)*).unwrap() }
         );
     };
 }
@@ -464,14 +464,15 @@ fn multithreaded_helper<const STAY_ALIVE: bool, SOLFN: Fn(&Sudoku) -> bool + std
                     thread_println!("{:?}: Thread {:?} found no new tasks", PROGRAM_START_TIME.elapsed().as_nanos(), thread::current().id());
                 }
                 core::mem::drop(shared_context);
-                thread::yield_now();
                 if !STAY_ALIVE {
                     if MULTITHREADING_DEBUG {
-                        thread_println!("{:?}: Thread {:?} has !STAY_ALIVE, yielding control to caller.", PROGRAM_START_TIME.elapsed().as_nanos(), thread::current().id());
+                        thread_println!("{:?}: Main Thread {:?} was late to the party, yielding control to caller.", PROGRAM_START_TIME.elapsed().as_nanos(), thread::current().id());
                     }
                     break;
+                } else {
+                    thread::yield_now();
+                    continue;
                 }
-                continue;
             }
             local_last_known_problem_index = shared_context.current_problem_index;
             local_last_known_problem = shared_context.current_problem.clone();
@@ -482,7 +483,7 @@ fn multithreaded_helper<const STAY_ALIVE: bool, SOLFN: Fn(&Sudoku) -> bool + std
 
         solve_single_thread(&mut local_last_known_problem, |solved_sudoku| {
             let mut shared_context = shared_context.lock().unwrap();
-            match &shared_context.solution_callback {
+            let should_stop = match &shared_context.solution_callback {
                 Some(callback) if shared_context.current_problem_index == local_last_known_problem_index && callback(solved_sudoku) => {
                     //We solved the current problem, which was unsolved
                     //Mark it solved, and cancel the current solve calc
@@ -504,7 +505,8 @@ fn multithreaded_helper<const STAY_ALIVE: bool, SOLFN: Fn(&Sudoku) -> bool + std
                     }
                     should_stop
                 }
-            }
+            };
+            should_stop
         }, || {
             let shared_context = shared_context.lock().unwrap();
             let should_stop = shared_context.solution_callback.is_none() || shared_context.current_problem_index != local_last_known_problem_index;
@@ -517,8 +519,14 @@ fn multithreaded_helper<const STAY_ALIVE: bool, SOLFN: Fn(&Sudoku) -> bool + std
             }
             should_stop
         },
-        &index_mapper,
-        );
+        &index_mapper);
+
+        if !STAY_ALIVE {
+            if MULTITHREADING_DEBUG {
+                thread_println!("{:?}: Thread {:?} has !STAY_ALIVE, yielding control to caller.", PROGRAM_START_TIME.elapsed().as_nanos(), thread::current().id());
+            }
+            break;
+        }
     }
 }
 
