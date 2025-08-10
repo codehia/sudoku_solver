@@ -1,10 +1,63 @@
 #![feature(isolate_most_least_significant_one)]
+#![feature(unsafe_cell_access)]
 
 use std::sync::Mutex;
 use std::thread;
+use std::time::{Duration, Instant};
+use core::cell::Cell;
+use std::sync::Once;
 
-const MULTITHREADING_DEBUG: bool = false;
-const SUDOKU_DEBUG: bool = false;
+const MULTITHREADING_DEBUG: bool = cfg!(MULTITHREADING_DEBUG);
+const SUDOKU_DEBUG: bool = cfg!(SUDOKU_DEBUG);
+
+static INIT: Once = Once::new();
+
+struct TrustMeBro<T> {
+    inner : core::cell::UnsafeCell<core::mem::MaybeUninit<T>>
+}
+impl<T> core::ops::Deref for TrustMeBro<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe {
+            self.inner.as_ref_unchecked().assume_init_ref()
+        }
+    }
+}
+impl<T> TrustMeBro<T> {
+    const fn uninit() -> Self {
+        TrustMeBro{inner: core::cell::UnsafeCell::new(core::mem::MaybeUninit::uninit())}
+    }
+    unsafe fn set(&self, val: T) {
+        unsafe {
+            self.inner.as_mut_unchecked().write(val)
+        };
+    }
+}
+unsafe impl<T: Sync> Sync for TrustMeBro<T> {}
+
+static PROGRAM_START_TIME: TrustMeBro<Instant> = TrustMeBro::uninit();
+
+//#[cfg(MULTITHREADING_DEBUG)]
+// mod tracing {
+//     use std::time::{Duration, Instant};
+//     use core::cell::Cell;
+
+//     macro_rules! measure_time {
+//         ($label:ident, $blk:block) => {
+//             let start = Instant::now();
+//             {
+//                 $blk
+//             }
+//             let time_spent = Instant::now() - start;
+//             $label.set($label.get() + time_spent);
+//         };
+//     }
+//     thread_local! {
+//         static TIME_STARTUP: Cell<Duration> = Cell::new(Duration::new(0, 0));
+//         static TIME_SOLVING: Cell<Duration> = Cell::new(Duration::new(0, 0));
+//     }
+// }
 
 trait MaybeValid {
     fn is_valid(&self) -> bool;
@@ -355,14 +408,20 @@ impl<'a, SOLFN> Solver<'a, SOLFN>
 where SOLFN: Fn(&Sudoku) -> bool + std::marker::Send
 {
     fn solve(&mut self, sudoku: &mut Sudoku, callback: SOLFN) {
+        if MULTITHREADING_DEBUG {
+            println!("{:?}: Queueing next problem with main thread: {:?}", PROGRAM_START_TIME.elapsed().as_micros(), thread::current().id());
+        }
         {
             let mut shared_context = self.shared_context.lock().unwrap();
             shared_context.current_problem_index += 1;
             shared_context.current_problem = sudoku.clone();
             shared_context.solution_callback = Some(callback);
+            if MULTITHREADING_DEBUG {
+                println!("{:?}: Queued problem {} with main thread: {:?}", PROGRAM_START_TIME.elapsed().as_micros(), shared_context.current_problem_index, thread::current().id());
+            }
         }
         if MULTITHREADING_DEBUG {
-            println!("Main thread is {:?}", thread::current().id());
+            println!("{:?}: Started work on the problem in main thread: {:?}", PROGRAM_START_TIME.elapsed().as_micros(), thread::current().id());
         }
         multithreaded_helper::<false, _>(self.shared_context, |x| x as u8);
     }
@@ -373,24 +432,25 @@ fn multithreaded_helper<const STAY_ALIVE: bool, SOLFN: Fn(&Sudoku) -> bool + std
     let mut local_last_known_problem;
     loop {
         if MULTITHREADING_DEBUG {
-            println!("Thread {:?} is checking for new tasks...", thread::current().id());
+            println!("{:?}: Thread {:?} is checking for new tasks...", PROGRAM_START_TIME.elapsed().as_micros(), thread::current().id());
         }
         {
             let shared_context = shared_context.lock().unwrap();
             if shared_context.current_problem_index == -1 {
                 if MULTITHREADING_DEBUG {
-                    println!("Thread {:?} acknowledged order to shut down", thread::current().id());
+                    println!("{:?}: Thread {:?} acknowledged order to shut down", PROGRAM_START_TIME.elapsed().as_micros(), thread::current().id());
                 }
                 break;
             }
             if shared_context.solution_callback.is_none() {
                 if MULTITHREADING_DEBUG {
-                    println!("Thread {:?} found no new tasks", thread::current().id());
+                    println!("{:?}: Thread {:?} found no new tasks", PROGRAM_START_TIME.elapsed().as_micros(), thread::current().id());
                 }
+                core::mem::drop(shared_context);
                 thread::yield_now();
                 if !STAY_ALIVE {
                     if MULTITHREADING_DEBUG {
-                        println!("Thread {:?} has !STAY_ALIVE, yielding control to caller.", thread::current().id());
+                        println!("{:?}: Thread {:?} has !STAY_ALIVE, yielding control to caller.", PROGRAM_START_TIME.elapsed().as_micros(), thread::current().id());
                     }
                     break;
                 }
@@ -399,7 +459,7 @@ fn multithreaded_helper<const STAY_ALIVE: bool, SOLFN: Fn(&Sudoku) -> bool + std
             local_last_known_problem_index = shared_context.current_problem_index;
             local_last_known_problem = shared_context.current_problem.clone();
             if MULTITHREADING_DEBUG {
-                println!("Thread {:?} found work, will start work on {}", thread::current().id(), local_last_known_problem_index);
+                println!("{:?}: Thread {:?} found work, will start work on {}", PROGRAM_START_TIME.elapsed().as_micros(), thread::current().id(), local_last_known_problem_index);
             }
         }
 
@@ -410,7 +470,7 @@ fn multithreaded_helper<const STAY_ALIVE: bool, SOLFN: Fn(&Sudoku) -> bool + std
                     //We solved the current problem, which was unsolved
                     //Mark it solved, and cancel the current solve calc
                     if MULTITHREADING_DEBUG {
-                        println!("Thread {:?} SUCCESS has solved problem {}", thread::current().id(), local_last_known_problem_index);
+                        println!("{:?}: Thread {:?} SUCCESS has solved problem {}", PROGRAM_START_TIME.elapsed().as_micros(), thread::current().id(), local_last_known_problem_index);
                     }
 
                     shared_context.solution_callback = None;
@@ -420,9 +480,9 @@ fn multithreaded_helper<const STAY_ALIVE: bool, SOLFN: Fn(&Sudoku) -> bool + std
                     let should_stop = shared_context.solution_callback.is_none() || shared_context.current_problem_index != local_last_known_problem_index;
                     if MULTITHREADING_DEBUG {
                         if should_stop {
-                            println!("Thread {:?} CANCELLING problem {} [via on_solved]", thread::current().id(), local_last_known_problem_index);
+                            println!("{:?}: Thread {:?} CANCELLING problem {} [via on_solved]", PROGRAM_START_TIME.elapsed().as_micros(), thread::current().id(), local_last_known_problem_index);
                         } else {
-                            println!("Thread {:?} CONTINUING,[via on_solved] for problem {}", thread::current().id(), local_last_known_problem_index);
+                            println!("{:?}: Thread {:?} CONTINUING,[via on_solved] for problem {}", PROGRAM_START_TIME.elapsed().as_micros(), thread::current().id(), local_last_known_problem_index);
                         }
                     }
                     should_stop
@@ -433,9 +493,9 @@ fn multithreaded_helper<const STAY_ALIVE: bool, SOLFN: Fn(&Sudoku) -> bool + std
             let should_stop = shared_context.solution_callback.is_none() || shared_context.current_problem_index != local_last_known_problem_index;
             if MULTITHREADING_DEBUG {
                 if should_stop {
-                    println!("Thread {:?} CANCELLING problem {} [via is_cancelled]", thread::current().id(), local_last_known_problem_index);
+                    println!("{:?}: Thread {:?} CANCELLING problem {} [via is_cancelled]", PROGRAM_START_TIME.elapsed().as_micros(), thread::current().id(), local_last_known_problem_index);
                 } else {
-                    println!("Thread {:?} CONTINUING,[via is_cancelled] for problem {}", thread::current().id(), local_last_known_problem_index);
+                    println!("{:?}: Thread {:?} CONTINUING,[via is_cancelled] for problem {}", PROGRAM_START_TIME.elapsed().as_micros(), thread::current().id(), local_last_known_problem_index);
                 }
             }
             should_stop
@@ -477,7 +537,7 @@ fn with_multithreaded_solver<T, SOLFN: Fn(&Sudoku) -> bool + std::marker::Send>(
             let shared_context_ref = &shared_context;
             scope.spawn(move || {
                 if MULTITHREADING_DEBUG {
-                    println!("Spawned helper thread {:?}", thread::current().id());
+                    println!("{:?}: Spawned helper thread {:?}", PROGRAM_START_TIME.elapsed().as_micros(), thread::current().id());
                 }
 
                 multithreaded_helper::<true, _>(shared_context_ref, index_mapper);
@@ -593,6 +653,7 @@ mod tests {
 
     #[test]
     fn test_basic() {
+        init();
         let did_solve = std::sync::atomic::AtomicBool::new(false);
         let x = with_multithreaded_solver(|solver| {
             test_helper_with_answer!(solver, did_solve, "351897264897642135642351789265139478784265913139784526918476352523918647476503891","351897264897642135642351789265139478784265913139784526918476352523918647476523891");
@@ -708,13 +769,14 @@ mod tests {
 
     #[test]
     fn test_files() {
+        init();
         use std::fs;
         use std::io::{BufReader, BufRead};
         let did_solve = std::sync::atomic::AtomicBool::new(false);
         with_multithreaded_solver(|solver| {
             let paths = fs::read_dir("../test_files").unwrap();
             let mut paths = paths.flatten().collect::<std::vec::Vec<_>>();
-            // paths.sort_by_key(|x| (x.path().as_os_str().len(), x.path()));
+            paths.sort_by_key(|x| (x.path().as_os_str().len(), x.path()));
             for path in paths {
                 let path = path.path();
                 let path_str: String = path.display().to_string();
@@ -738,14 +800,20 @@ mod tests {
                         _ => test_helper!(solver, did_solve, &buf[0..81]),
                     }
                 }
-                println!("\rFinished solving file {} in {:?}", path_str, std::time::Instant::now()-test_start);
+                println!("\rFinished solving file {} in {:?}", path_str, test_start.elapsed().as_micros());
             }
         });
     }
 }
 
+fn init() {
+    INIT.call_once(|| unsafe { PROGRAM_START_TIME.set(Instant::now()); });    
+}
+
 // Run the solver on all csv files using `cargo test --release -- --no-capture`
+// Print debug logs using `RUSTFLAGS='--cfg MULTITHREADING_DEBUG' cargo run --release`
 fn main() {
+    init();
     with_multithreaded_solver(|solver| {
         let mut sudoku: Sudoku =
             "000720030007006820106008709003091000580407200000000006840650010600143900005000402".into();
